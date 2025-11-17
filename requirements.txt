@@ -2,4 +2,4 @@ streamlit
 pandas
 plotly
 pyserial
-paho-mqtt-client
+paho-mqtt
