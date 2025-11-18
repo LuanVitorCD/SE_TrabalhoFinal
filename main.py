@@ -3,6 +3,8 @@ import paho.mqtt.client as mqtt
 import time
 import logging
 from streamlit_autorefresh import st_autorefresh
+import pandas as pd  # ### ADICIONADO ###
+import plotly.express as px  # ### ADICIONADO ###
 
 # Configurar logging para ver mensagens no terminal
 logging.basicConfig(
@@ -20,13 +22,11 @@ TOPICO_TEMPERATURA = "esp32/streamlit/temperatura"
 TOPICO_UMIDADE = "esp32/streamlit/umidade"
 
 # ------ CONFIGURAÇÃO DO STREAMLIT ------
-st.set_page_config(page_title="Dashboard MQTT", layout="centered")
-st.title("📊 Dashboard de Monitoramento MQTT")
+st.set_page_config(page_title="Dashboard MQTT", layout="wide") # ### MODIFICADO ### (para layout="wide")
+st.title("📊 Dashboard de Monitoramento MQTT com Gráficos")
 st.markdown("---")
 
 # --- NOSSA CORREÇÃO (AUTOREFRESH) ---
-# Força um 'rerun' a cada 1 segundo (1000ms).
-# Isso vai disparar o client.loop() lá embaixo.
 st_autorefresh(interval=1000, limit=None)
 # -----------------------------------
 
@@ -37,13 +37,19 @@ if "umidade" not in st.session_state:
     st.session_state.umidade = "Aguardando..."
 if "conectado" not in st.session_state:
     st.session_state.conectado = False
+    
+# ### ADICIONADO ### - Listas para guardar o histórico dos gráficos
+if "temp_data" not in st.session_state:
+    st.session_state.temp_data = [] # Lista de dicionários: [{'timestamp': ..., 'value': ...}]
+if "umid_data" not in st.session_state:
+    st.session_state.umid_data = [] # Lista de dicionários: [{'timestamp': ..., 'value': ...}]
 
-# ------ CALLBACKS MQTT (Sem mudanças) ------
+
+# ------ CALLBACKS MQTT ------
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         st.session_state.conectado = True
         logger.info("✅ CONECTADO AO BROKER MQTT COM SUCESSO")
-        # Se inscreve nos tópicos
         client.subscribe(TOPICO_TEMPERATURA)
         client.subscribe(TOPICO_UMIDADE)
         logger.info(f"🎯 Inscrito nos tópicos: {TOPICO_TEMPERATURA}, {TOPICO_UMIDADE}")
@@ -54,52 +60,67 @@ def on_connect(client, userdata, flags, rc):
 def on_disconnect(client, userdata, rc):
     st.session_state.conectado = False
     logger.warning(f"🔌 DESCONECTADO DO BROKER - Código: {rc}")
-    # Limpa o cache para forçar uma reconexão na próxima atualização
     st.cache_resource.clear()
 
+# ### MODIFICADO ### - Função on_message para guardar histórico
 def on_message(client, userdata, msg):
     try:
         payload = msg.payload.decode()
         logger.info(f"📥 MENSAGEM RECEBIDA - Tópico: {msg.topic} | Payload: {payload}")
         
-        # Atualizar o session_state.
+        valor_float = None
+        try:
+            # Tenta converter o payload para float
+            valor_float = float(payload)
+        except ValueError:
+            logger.warning(f"Payload '{payload}' não é um número flutuante. Ignorando.")
+            return
+
+        # Pega o horário atual
+        now = pd.Timestamp.now()
+        
         if msg.topic == TOPICO_TEMPERATURA:
-            st.session_state.temperatura = f"{payload} °C"
-            logger.info(f"🌡 TEMPERATURA ATUALIZADA: {payload}°C")
+            # 1. Atualiza a métrica (formato string)
+            st.session_state.temperatura = f"{valor_float:.1f} °C"
+            logger.info(f"🌡 TEMPERATURA ATUALIZADA: {valor_float}°C")
+            
+            # 2. Adiciona dados ao histórico do gráfico
+            st.session_state.temp_data.append({"timestamp": now, "value": valor_float})
+            # 3. Limita o histórico aos últimos 100 pontos
+            st.session_state.temp_data = st.session_state.temp_data[-100:]
+            
         elif msg.topic == TOPICO_UMIDADE:
-            st.session_state.umidade = f"{payload} %"
-            logger.info(f"💧 UMIDADE ATUALIZADA: {payload}%")
+            # 1. Atualiza a métrica (formato string)
+            st.session_state.umidade = f"{valor_float:.1f} %"
+            logger.info(f"💧 UMIDADE ATUALIZADA: {valor_float}%")
+            
+            # 2. Adiciona dados ao histórico do gráfico
+            st.session_state.umid_data.append({"timestamp": now, "value": valor_float})
+            # 3. Limita o histórico aos últimos 100 pontos
+            st.session_state.umid_data = st.session_state.umid_data[-100:]
             
     except Exception as e:
         logger.error(f"❌ ERRO AO PROCESSAR MENSAGEM: {e}")
 
+
 def on_subscribe(client, userdata, mid, granted_qos):
     logger.info(f"✅ INSCRIÇÃO CONFIRMADA - MID: {mid}, QOS: {granted_qos}")
 
-# ------ INICIALIZAR CLIENTE MQTT (NOVO MÉTODO) ------
-# Usamos @st.cache_resource para criar e manter o cliente MQTT.
-# Esta função só será executada uma vez (ou quando o cache for limpo).
+# ------ INICIALIZAR CLIENTE MQTT (Sem mudanças) ------
 @st.cache_resource
 def get_mqtt_client():
     try:
         logger.info("🔄 INICIANDO CLIENTE MQTT (CACHE RESOURCE)...")
         client = mqtt.Client()
-        
-        # Configurar callbacks
         client.on_connect = on_connect
         client.on_message = on_message
         client.on_disconnect = on_disconnect
         client.on_subscribe = on_subscribe
-        
         client.will_set("esp32/streamlit/status", "offline", retain=True)
         
         logger.info(f"🔗 CONECTANDO AO BROKER: {BROKER}:{PORT}")
-        # Usamos connect() síncrono.
         client.connect(BROKER, PORT, 60)
         logger.info("🔄 CLIENTE CONECTADO (SINCRONAMENTE)")
-
-        # **NÃO USAMOS MAIS client.loop_start()**
-        
         return client
         
     except Exception as e:
@@ -108,23 +129,18 @@ def get_mqtt_client():
         st.error(f"❌ Falha crítica ao conectar ao MQTT: {e}")
         return None
 
-# ------ INICIALIZAÇÃO E LOOP PRINCIPAL ------
+# ------ INICIALIZAÇÃO E LOOP PRINCIPAL (Sem mudanças) ------
 def main():
     logger.info("🚀 EXECUTANDO RERUN DO STREAMLIT")
-    
-    # Obter o cliente (do cache ou criando um novo)
     client = get_mqtt_client()
     
     if client:
-        # **A MÁGICA ACONTECE AQUI**
-        # Em cada rerun, processamos o loop do MQTT por 0.1s.
-        # Isso é rápido, não bloqueia o app, e processa todas as
-        # mensagens na fila, disparando o on_message()
         client.loop(timeout=0.1)
     else:
         logger.warning("Cliente MQTT não está disponível.")
 
-# ------ INTERFACE DO DASHBOARD (Sem mudanças) ------
+# ------ INTERFACE DO DASHBOARD ------
+# ### MODIFICADO ### - Gráficos adicionados
 col1, col2 = st.columns(2)
 with col1:
     st.metric(label="🌡 Temperatura", value=st.session_state.temperatura)
@@ -132,32 +148,78 @@ with col2:
     st.metric(label="💧 Umidade", value=st.session_state.umidade)
 
 st.markdown("---")
-status_color = "🟢" if st.session_state.conectado else "🔴"
-status_text = "Conectado" if st.session_state.conectado else "Desconectado"
-st.write(f"{status_color} **Status da Conexão:** {status_text}")
 
-st.write(f"**Broker:** {BROKER}:{PORT}")
-st.write(f"**Tópicos monitorados:** `{TOPICO_TEMPERATURA}`, `{TOPICO_UMIDADE}`")
+# ### ADICIONADO ### - Seção de Gráficos
+col_graf1, col_graf2 = st.columns(2)
+
+with col_graf1:
+    st.subheader("Histórico de Temperatura")
+    if not st.session_state.temp_data:
+        st.info("Aguardando dados de temperatura para exibir o gráfico...")
+    else:
+        # Cria o DataFrame a partir do session_state
+        temp_df = pd.DataFrame(st.session_state.temp_data)
+        temp_df.rename(columns={"timestamp": "Horário", "value": "Temperatura (°C)"}, inplace=True)
+        
+        fig_temp = px.line(temp_df, x="Horário", y="Temperatura (°C)", markers=True)
+        fig_temp.update_layout(
+            xaxis_title="Horário", 
+            yaxis_title="Temperatura (°C)",
+            yaxis_range=[temp_df["Temperatura (°C)"].min() - 2, temp_df["Temperatura (°C)"].max() + 2] # Ajusta eixo Y
+        )
+        st.plotly_chart(fig_temp, use_container_width=True)
+
+with col_graf2:
+    st.subheader("Histórico de Umidade")
+    if not st.session_state.umid_data:
+        st.info("Aguardando dados de umidade para exibir o gráfico...")
+    else:
+        # Cria o DataFrame a partir do session_state
+        umid_df = pd.DataFrame(st.session_state.umid_data)
+        umid_df.rename(columns={"timestamp": "Horário", "value": "Umidade (%)"}, inplace=True)
+        
+        fig_umid = px.line(umid_df, x="Horário", y="Umidade (%)", markers=True)
+        fig_umid.update_layout(
+            xaxis_title="Horário", 
+            yaxis_title="Umidade (%)",
+            yaxis_range=[umid_df["Umidade (%)"].min() - 5, umid_df["Umidade (%)"].max() + 5] # Ajusta eixo Y
+        )
+        st.plotly_chart(fig_umid, use_container_width=True)
+
+# ### FIM DA SEÇÃO DE GRÁFICOS ###
 
 st.markdown("---")
-col_btn1, col_btn2 = st.columns(2)
+
+# Seção de Status e Botões
+col_status, col_btn1, col_btn2 = st.columns([2, 1, 1])
+
+with col_status:
+    status_color = "🟢" if st.session_state.conectado else "🔴"
+    status_text = "Conectado" if st.session_state.conectado else "Desconectado"
+    st.write(f"{status_color} **Status da Conexão:** {status_text}")
+    st.write(f"**Broker:** {BROKER}:{PORT}")
+    st.write(f"**Tópicos:** `{TOPICO_TEMPERATURA}`, `{TOPICO_UMIDADE}`")
 
 with col_btn1:
-    if st.button("🔄 Reiniciar Conexão MQTT"):
+    # ### MODIFICADO ### - Botão agora também limpa o histórico
+    if st.button("🔄 Reiniciar Conexão e Gráficos"):
         logger.info("🔄 REINICIANDO CONEXÃO MQTT (LIMPANDO CACHE)...")
-        # Limpa o cache do cliente.
         st.cache_resource.clear()
-        # Reseta o estado
         st.session_state.conectado = False
         st.session_state.temperatura = "Reiniciando..."
         st.session_state.umidade = "Reiniciando..."
-        # Força um rerun imediato para recriar o cliente
+        
+        # ### ADICIONADO ### - Limpa os dados históricos
+        st.session_state.temp_data = []
+        st.session_state.umid_data = []
+        logger.info("🧹 HISTÓRICO DOS GRÁFICOS LIMPO.")
+        
         st.rerun()
 
 with col_btn2:
-    if st.button("📊 Status Completo"):
+    if st.button("📊 Status Completo no Terminal"):
         logger.info("📊 STATUS DO SISTEMA SOLICITADO:")
-        logger.info(f"   - Conectado: {st.session_state.conectado}")
+        logger.info(f"   - Conectado: {st.session_state.conectado}")
         st.info("Verifique o terminal para detalhes do status")
 
 # Log de mensagens (Seu código original, sem mudanças)
