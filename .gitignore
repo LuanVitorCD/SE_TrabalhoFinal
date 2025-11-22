@@ -4,6 +4,10 @@ venv/
 env/
 .env
 
+# Chave confidencial Firebase
+firebase_key.json
+*key.json
+
 # Cache e arquivos compilados do Python
 __pycache__/
 *.pyc
