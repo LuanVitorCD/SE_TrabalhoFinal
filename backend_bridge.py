@@ -1,3 +1,18 @@
+"""
+ * ======================================================================================
+ * PROJETO: Estação Meteorológica IoT com ESP32 (EcoSense IoT)
+ * ======================================================================================
+ * OBJETIVO:
+ * - Monitorar Temperatura e Umidade com sensor DHT22;
+ * - Enviar dados via MQTT para um Dashboard em Python/Streamlit;
+ * - Receber comandos remotos para ajustar limites de alerta;
+ * - Exibir dados em Display OLED e alertar via LEDs.
+ *
+ * AUTORES: Henrique Luan Fritz, Luan Vitor Casali Dallabrida e Lucas Pannebecker Sckenal
+ *
+ * HARDWARE: ESP32 TTGO T-Beam V1.1, Sensor DHT22, LEDs (Vermelho, Azul, Verde).
+ * ======================================================================================
+"""
 import os
 import time
 import json
@@ -83,7 +98,9 @@ def on_config_snapshot(doc_snapshot, changes, read_time):
             # O ESP32 espera chaves: "temp_max" e "temp_min"
             payload_esp32 = json.dumps({
                 "temp_max": data.get("temp_max", 30.0),
-                "temp_min": data.get("temp_min", 15.0)
+                "temp_min": data.get("temp_min", 15.0),
+                "umid_max": data.get("umid_max", 80.0),
+                "umid_min": data.get("umid_min", 30.0)
             })
             
             # Publica no MQTT

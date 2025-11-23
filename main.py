@@ -1,249 +1,267 @@
+"""
+ * ======================================================================================
+ * PROJETO: Estação Meteorológica IoT com ESP32 (EcoSense IoT)
+ * ======================================================================================
+ * OBJETIVO:
+ * - Monitorar Temperatura e Umidade com sensor DHT22;
+ * - Enviar dados via MQTT para um Dashboard em Python/Streamlit;
+ * - Receber comandos remotos para ajustar limites de alerta;
+ * - Exibir dados em Display OLED e alertar via LEDs.
+ *
+ * AUTORES: Henrique Luan Fritz, Luan Vitor Casali Dallabrida e Lucas Pannebecker Sckenal
+ *
+ * HARDWARE: ESP32 TTGO T-Beam V1.1, Sensor DHT22, LEDs (Vermelho, Azul, Verde).
+ * ======================================================================================
+"""
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import firebase_admin
 from firebase_admin import credentials, firestore
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
-import json
 from streamlit_autorefresh import st_autorefresh
 
-# ------ CONFIGURAÇÃO DA PÁGINA (Deve ser a primeira linha) ------
-st.set_page_config(
-    page_title="Monitoramento Ambiental",
-    layout="wide",
-    page_icon="🌡️",
-    initial_sidebar_state="expanded"
-)
-
-# Carrega variáveis de ambiente
+# ==========================================
+# 1. CONFIGURAÇÃO E ESTADO INICIAL
+# ==========================================
+st.set_page_config(page_title="EcoSense IoT", layout="wide", page_icon="🌤️")
 load_dotenv()
 
-# ------ CSS PARA REMOVER PADDING E MELHORAR VISUAL (Anti-Flicker visual) ------
-st.markdown("""
-    <style>
-        .block-container {
-            padding-top: 2rem;
-            padding-bottom: 2rem;
-        }
-        /* Esconde menu padrão do Streamlit para limpar visual */
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
-    </style>
-""", unsafe_allow_html=True)
+# Inicializa Session State
+if 'historico_temp' not in st.session_state: st.session_state.historico_temp = pd.DataFrame()
+if 'historico_umid' not in st.session_state: st.session_state.historico_umid = pd.DataFrame()
+if 'kpi_temp' not in st.session_state: st.session_state.kpi_temp = {}
+if 'kpi_umid' not in st.session_state: st.session_state.kpi_umid = {}
+if 'last_history_update' not in st.session_state: st.session_state.last_history_update = None
 
-# ------ CONEXÃO FIREBASE ------
+# ==========================================
+# 2. CONEXÃO FIREBASE
+# ==========================================
 if not firebase_admin._apps:
     cred_path = os.getenv("FIREBASE_CREDENTIALS", "firebase_key.json")
-    
-    # Fallback local
-    if not os.path.exists(cred_path) and os.path.exists("firebase_key.json"):
-        cred_path = "firebase_key.json"
-        
     if os.path.exists(cred_path):
         cred = credentials.Certificate(cred_path)
         firebase_admin.initialize_app(cred)
     else:
-        st.error("🚨 Erro Crítico: Credenciais do Firebase não encontradas.")
+        st.error("🚨 Credenciais não encontradas.")
         st.stop()
 
 db = firestore.client()
 COLLECTION_DATA = os.getenv("COLLECTION_DATA", "estacao_dados")
+COLLECTION_CONFIG = os.getenv("COLLECTION_CONFIG", "estacao_config")
+DOC_CONFIG_ID = "limites_alerta"
 
-# ------ BARRA LATERAL (CONTROLES) ------
+# ==========================================
+# 3. SIDEBAR (CONTROLE & CONFIGURAÇÃO)
+# ==========================================
 with st.sidebar:
-    st.header("🎛️ Controles")
+    st.title("🎛️ Controle EcoSense")
     
-    # 1. Seletor de Modo de Visualização
-    modo_visualizacao = st.radio(
-        "Período de Análise:",
-        ("Monitoramento Real-Time (24h)", "Histórico por Data")
-    )
-    
-    data_selecionada = None
-    if modo_visualizacao == "Histórico por Data":
-        data_selecionada = st.date_input("Selecione a data:", datetime.now())
+    # --- BLOCO A: STATUS ---
+    st.markdown("### 🚦 Monitoramento")
+    ativo = st.toggle("ATIVAR ATUALIZAÇÃO", value=True)
+    if ativo:
+        st.caption("🟢 Online (KPIs a cada 15s)")
+    else:
+        st.caption("🔴 Pausado")
+
+    intervalo_kpi = st.slider("Cooldown (segundos)", 10, 60, 15)
     
     st.markdown("---")
     
-    # 2. Controle de Atualização
-    # Se estiver vendo histórico antigo, não precisa atualizar sozinho
-    if modo_visualizacao == "Monitoramento Real-Time (24h)":
-        auto_refresh = st.checkbox("Atualização Automática", value=True)
-        if auto_refresh:
-            # Intervalo de 5 segundos. key ajuda a manter o estado e evitar flicker excessivo
-            st_autorefresh(interval=5000, key="data_refresh")
-    else:
-        st.info("Atualização automática pausada no modo Histórico.")
+    # --- BLOCO B: CONFIGURAÇÃO DE LIMITES ---
+    st.markdown("### 📡 Ajuste de Alertas (Remoto)")
+    st.caption("Define quando os LEDs do ESP32 acendem.")
+    
+    # Botão para carregar config atual (Economia: só lê se usuário pedir)
+    if st.button("🔄 Carregar Configuração Atual"):
+        cfg = db.collection(COLLECTION_CONFIG).document(DOC_CONFIG_ID).get()
+        if cfg.exists:
+            st.session_state.config_cache = cfg.to_dict()
+        else:
+            st.warning("Configuração não encontrada no banco.")
+    
+    # Carrega do cache ou usa padrão
+    curr_cfg = st.session_state.get('config_cache', {"temp_max": 30, "temp_min": 15, "umid_max": 80, "umid_min": 30})
+    
+    with st.form("conf_form_sidebar"):
+        st.markdown("**Temperatura (°C)**")
+        c1, c2 = st.columns(2)
+        nt_max = c1.number_input("Máx", value=float(curr_cfg.get('temp_max', 30)), label_visibility="collapsed")
+        nt_min = c2.number_input("Mín", value=float(curr_cfg.get('temp_min', 15)), label_visibility="collapsed")
+        
+        st.markdown("**Umidade (%)**")
+        c3, c4 = st.columns(2)
+        nu_max = c3.number_input("Máx", value=float(curr_cfg.get('umid_max', 80)), label_visibility="collapsed")
+        nu_min = c4.number_input("Mín", value=float(curr_cfg.get('umid_min', 30)), label_visibility="collapsed")
+            
+        if st.form_submit_button("💾 Enviar para ESP32"):
+            new_conf = {
+                "temp_max": nt_max, "temp_min": nt_min,
+                "umid_max": nu_max, "umid_min": nu_min
+            }
+            db.collection(COLLECTION_CONFIG).document(DOC_CONFIG_ID).set(new_conf)
+            st.success("Comando enviado!")
 
     st.markdown("---")
-    st.caption(f"Conectado a: {COLLECTION_DATA}")
+    st.info(f"Última carga gráfica: {st.session_state.last_history_update if st.session_state.last_history_update else 'Nunca'}")
 
-# ------ FUNÇÃO DE DADOS (COM CACHE PARA PERFORMANCE) ------
-@st.cache_data(ttl=10 if modo_visualizacao == "Monitoramento Real-Time (24h)" else 3600)
-def get_firestore_data(mode, selected_date=None):
-    """
-    Busca dados no Firestore.
-    - mode='realtime': Últimas 24h
-    - mode='history': Dia específico (00:00 a 23:59)
-    """
-    collection_ref = db.collection(COLLECTION_DATA)
+# Refresh automático
+if ativo:
+    st_autorefresh(interval=intervalo_kpi * 1000, key="kpi_refresher")
+
+# ==========================================
+# 4. FUNÇÕES OTIMIZADAS
+# ==========================================
+
+def update_kpis_with_delta():
+    """Busca os 2 últimos registros para calcular o Delta (Tendência)."""
+    try:
+        # Temperatura (Pega 2 últimos)
+        docs_t = db.collection(COLLECTION_DATA).where("tipo", "==", "temperatura")\
+                   .order_by("timestamp", direction=firestore.Query.DESCENDING).limit(2).get()
+        
+        # Umidade (Pega 2 últimos)
+        docs_h = db.collection(COLLECTION_DATA).where("tipo", "==", "umidade")\
+                   .order_by("timestamp", direction=firestore.Query.DESCENDING).limit(2).get()
+        
+        # Processa Temp
+        if docs_t:
+            curr = docs_t[0].to_dict()
+            prev = docs_t[1].to_dict() if len(docs_t) > 1 else curr
+            st.session_state.kpi_temp = {
+                "valor": curr['valor'],
+                "delta": curr['valor'] - prev['valor'],
+                "time": curr['timestamp']
+            }
+            
+        # Processa Umid
+        if docs_h:
+            curr = docs_h[0].to_dict()
+            prev = docs_h[1].to_dict() if len(docs_h) > 1 else curr
+            st.session_state.kpi_umid = {
+                "valor": curr['valor'],
+                "delta": curr['valor'] - prev['valor'],
+                "time": curr['timestamp']
+            }
+            
+    except Exception as e:
+        st.error(f"Erro KPI: {e}")
+
+def update_history_heavy():
+    """CUSTO: ALTO. Executado apenas manualmente."""
+    try:
+        limit_docs = 200
+        
+        docs_t = db.collection(COLLECTION_DATA).where("tipo", "==", "temperatura")\
+                   .order_by("timestamp", direction=firestore.Query.DESCENDING).limit(limit_docs).stream()
+        docs_h = db.collection(COLLECTION_DATA).where("tipo", "==", "umidade")\
+                   .order_by("timestamp", direction=firestore.Query.DESCENDING).limit(limit_docs).stream()
+            
+        dt_t = [d.to_dict() for d in docs_t]
+        dt_h = [d.to_dict() for d in docs_h]
+        
+        df_t = pd.DataFrame(dt_t)
+        df_h = pd.DataFrame(dt_h)
+        
+        for df in [df_t, df_h]:
+            if not df.empty and 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
+        
+        st.session_state.historico_temp = df_t
+        st.session_state.historico_umid = df_h
+        st.session_state.last_history_update = datetime.now().strftime("%H:%M:%S")
+        
+    except Exception as e:
+        st.error(f"Erro Histórico: {e}")
+
+# Executa KPI se ativo
+if ativo:
+    update_kpis_with_delta()
+
+# ==========================================
+# 5. INTERFACE DO DASHBOARD
+# ==========================================
+
+st.title("🌤️ EcoSense IoT")
+
+# --- BLOCO 1: INDICADORES (KPIs) ---
+col1, col2, col3 = st.columns(3)
+
+def get_kpi_display(key, unit):
+    data = st.session_state.get(key, {})
+    val = data.get('valor', '--')
+    delta = data.get('delta', 0)
     
-    if mode == "realtime":
-        start_time = datetime.now() - timedelta(hours=24)
-        query = collection_ref.where("timestamp", ">=", start_time)
-    else:
-        # Filtro para o dia inteiro selecionado
-        start_time = datetime.combine(selected_date, time.min)
-        end_time = datetime.combine(selected_date, time.max)
-        query = collection_ref.where("timestamp", ">=", start_time).where("timestamp", "<=", end_time)
+    if val != '--':
+        return f"{val:.1f} {unit}", f"{delta:.1f} {unit}"
+    return "--", None
 
-    docs = query.order_by("timestamp", direction=firestore.Query.ASCENDING).stream()
+val_t, delta_t = get_kpi_display('kpi_temp', '°C')
+val_u, delta_u = get_kpi_display('kpi_umid', '%')
 
-    data_list = []
-    for doc in docs:
-        d = doc.to_dict()
-        data_list.append(d)
+col1.metric("Temperatura", val_t, delta_t)
+col2.metric("Umidade", val_u, delta_u)
 
-    if not data_list:
-        return pd.DataFrame(), pd.DataFrame()
+last_time = st.session_state.kpi_temp.get('time')
+if last_time:
+    t_str = last_time.strftime("%H:%M:%S") if isinstance(last_time, datetime) else str(last_time)
+    col3.metric("Última Leitura", t_str, "Online")
+else:
+    col3.metric("Status", "Aguardando...", "Offline")
 
-    df = pd.DataFrame(data_list)
-    
-    # Garantir datetime
-    if 'timestamp' in df.columns:
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        # Remover fuso horário para evitar erros no Excel/JSON se houver mistura
-        df['timestamp'] = df['timestamp'].dt.tz_localize(None)
-
-    # Separação segura (verifica se coluna existe)
-    col_tipo = 'valor_tipo' if 'valor_tipo' in df.columns else 'tipo'
-    
-    df_temp = df[df[col_tipo] == 'temperatura'].copy()
-    df_hum = df[df[col_tipo] == 'umidade'].copy()
-    
-    return df_temp, df_hum
-
-# ------ CARREGAMENTO DE DADOS ------
-mode_param = "realtime" if modo_visualizacao == "Monitoramento Real-Time (24h)" else "history"
-df_temp, df_hum = get_firestore_data(mode_param, data_selecionada)
-
-# ------ LAYOUT PRINCIPAL ------
-st.title("🎛️ Centro de Controle Ambiental")
-st.markdown("Monitoramento IoT integrado com Firebase Firestore")
 st.markdown("---")
 
-# 1. KPIs (Métricas do Topo)
-kpi1, kpi2, kpi3 = st.columns(3)
+# --- BLOCO 2: GRÁFICOS (SOB DEMANDA) ---
+col_head, col_act = st.columns([3, 1])
+col_head.subheader("📊 Análise Gráfica")
 
-# KPI Temperatura
-with kpi1:
-    if not df_temp.empty:
-        last_val = df_temp.iloc[-1]['valor']
-        # Calcula delta se houver mais de 1 registro
-        delta = float(last_val - df_temp.iloc[-2]['valor']) if len(df_temp) > 1 else 0.0
-        st.metric("Temperatura", f"{last_val:.1f} °C", f"{delta:.1f} °C")
+if col_act.button("🔄 ATUALIZAR GRÁFICOS (Custo Alto)"):
+    with st.spinner("Baixando histórico..."):
+        update_history_heavy()
+    st.rerun()
+
+tab1, tab2 = st.tabs(["🔥 Temperatura", "💧 Umidade"])
+
+with tab1:
+    if not st.session_state.historico_temp.empty:
+        fig = px.line(st.session_state.historico_temp, x='timestamp', y='valor', markers=True, line_shape='spline')
+        fig.update_traces(line_color='#FF4B4B')
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        st.metric("Temperatura", "--", None)
+        st.info("Sem dados recentes na memória. Clique em 'Atualizar Gráficos'.")
 
-# KPI Umidade
-with kpi2:
-    if not df_hum.empty:
-        last_val_h = df_hum.iloc[-1]['valor']
-        delta_h = float(last_val_h - df_hum.iloc[-2]['valor']) if len(df_hum) > 1 else 0.0
-        st.metric("Umidade", f"{last_val_h:.1f} %", f"{delta_h:.1f} %")
+with tab2:
+    if not st.session_state.historico_umid.empty:
+        fig = px.line(st.session_state.historico_umid, x='timestamp', y='valor', markers=True, line_shape='spline')
+        fig.update_traces(line_color='#00CC96')
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        st.metric("Umidade", "--", None)
+        st.info("Sem dados recentes na memória. Clique em 'Atualizar Gráficos'.")
 
-# KPI Status / Info
-with kpi3:
-    if not df_temp.empty:
-        last_time = df_temp.iloc[-1]['timestamp'].strftime("%H:%M:%S - %d/%m")
-        st.metric("Última Atualização", last_time, delta_color="off")
-    else:
-        st.metric("Status", "Sem Dados", delta_color="off")
-
+# --- BLOCO 3: DADOS BRUTOS & DOWNLOAD ---
 st.markdown("---")
-
-# 2. Gráficos (Lado a Lado)
-col_graf1, col_graf2 = st.columns(2)
-
-with col_graf1:
-    st.subheader("🔥 Evolução Térmica")
-    if not df_temp.empty:
-        fig_t = px.line(
-            df_temp, 
-            x="timestamp", 
-            y="valor",
-            labels={"timestamp": "Horário", "valor": "Temperatura (°C)"},
-            color_discrete_sequence=['#FF4B4B'] # Vermelho estilo main.py
-        )
-        fig_t.update_layout(height=350, margin=dict(l=20, r=20, t=30, b=20))
-        st.plotly_chart(fig_t, use_container_width=True)
-    else:
-        st.warning("Aguardando dados de temperatura...")
-
-with col_graf2:
-    st.subheader("💧 Tendência Higrométrica")
-    if not df_hum.empty:
-        fig_h = px.line(
-            df_hum, 
-            x="timestamp", 
-            y="valor",
-            labels={"timestamp": "Horário", "valor": "Umidade (%)"},
-            color_discrete_sequence=['#00CC96'] # Verde estilo main.py
-        )
-        # Adicionar linhas de referência visual (opcional, igual ao seu main original)
-        fig_h.add_hline(y=75, line_dash="dot", line_color="gray", opacity=0.5)
-        fig_h.update_layout(height=350, margin=dict(l=20, r=20, t=30, b=20))
-        st.plotly_chart(fig_h, use_container_width=True)
-    else:
-        st.info("Aguardando dados de umidade...")
-
-# 3. Área de Dados e Downloads
-st.markdown("---")
-with st.expander("📂 Exportar Dados (CSV / JSON)"):
-    tab_t, tab_h = st.tabs(["Dados Temperatura", "Dados Umidade"])
+with st.expander("📂 Dados Brutos & Downloads"):
+    st.markdown("Estes dados refletem o que está carregado na memória atual.")
     
-    with tab_t:
-        if not df_temp.empty:
-            # Botão CSV
-            csv_t = df_temp.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Baixar Temperatura (CSV)",
-                data=csv_t,
-                file_name="temperatura.csv",
-                mime="text/csv"
-            )
-            # Botão JSON
-            json_t = df_temp.to_json(orient="records", date_format="iso")
-            st.download_button(
-                label="📥 Baixar Temperatura (JSON)",
-                data=json_t,
-                file_name="temperatura.json",
-                mime="application/json"
-            )
-            st.dataframe(df_temp.tail(10), use_container_width=True)
+    col_t, col_h = st.columns(2)
+    
+    with col_t:
+        st.markdown("#### Temperatura")
+        if not st.session_state.historico_temp.empty:
+            csv_t = st.session_state.historico_temp.to_csv(index=False)
+            st.download_button("📥 Baixar CSV (Temp)", csv_t, "temperatura.csv", "text/csv")
+            st.dataframe(st.session_state.historico_temp, use_container_width=True, height=300)
         else:
-            st.write("Sem dados para exportar.")
+            st.caption("Sem dados.")
 
-    with tab_h:
-        if not df_hum.empty:
-            csv_h = df_hum.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Baixar Umidade (CSV)",
-                data=csv_h,
-                file_name="umidade.csv",
-                mime="text/csv"
-            )
-            json_h = df_hum.to_json(orient="records", date_format="iso")
-            st.download_button(
-                label="📥 Baixar Umidade (JSON)",
-                data=json_h,
-                file_name="umidade.json",
-                mime="application/json"
-            )
-            st.dataframe(df_hum.tail(10), use_container_width=True)
+    with col_h:
+        st.markdown("#### Umidade")
+        if not st.session_state.historico_umid.empty:
+            csv_u = st.session_state.historico_umid.to_csv(index=False)
+            st.download_button("📥 Baixar CSV (Umid)", csv_u, "umidade.csv", "text/csv")
+            st.dataframe(st.session_state.historico_umid, use_container_width=True, height=300)
         else:
-            st.write("Sem dados para exportar.")
+            st.caption("Sem dados.")

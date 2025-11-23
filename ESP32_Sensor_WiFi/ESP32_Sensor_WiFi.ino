@@ -1,169 +1,302 @@
 /*
- * Código ESP32: Cliente MQTT com Display OLED
+ * ======================================================================================
+ * PROJETO: Estação Meteorológica IoT com ESP32 (EcoSense IoT)
+ * ======================================================================================
+ * OBJETIVO:
+ * - Monitorar Temperatura e Umidade com sensor DHT22;
+ * - Enviar dados via MQTT para um Dashboard em Python/Streamlit;
+ * - Receber comandos remotos para ajustar limites de alerta;
+ * - Exibir dados em Display OLED e alertar via LEDs.
  *
- * 1. Conecta-se ao Wi-Fi.
- * 2. Conecta-se ao broker MQTT (broker.hivemq.com).
- * 3. Lê o sensor DHT22.
- * 4. Mostra o status e as leituras no display OLED.
- * 5. Publica (envia) os dados para os tópicos MQTT.
+ * AUTORES: Henrique Luan Fritz, Luan Vitor Casali Dallabrida e Lucas Pannebecker Sckenal
  *
- * Bibliotecas necessárias na IDE do Arduino:
- * - "DHT sensor library" (da Adafruit)
- * - "Adafruit GFX Library"
- * - "Adafruit SSD1306"
- * - "PubSubClient" (por Nick O'Leary)
+ * HARDWARE: ESP32 TTGO T-Beam V1.1, Sensor DHT22, LEDs (Vermelho, Azul, Verde).
+ * ======================================================================================
  */
 
-#include <WiFi.h>
-#include <PubSubClient.h> // Biblioteca MQTT
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include <DHT.h>
+// --- BIBLIOTECAS NECESSÁRIAS ---
+// Certifique-se de instalá-las via Gerenciador de Bibliotecas da Arduino IDE.
+#include <WiFi.h>             // Para conexão com a rede Wi-Fi
+#include <PubSubClient.h>     // Para comunicação via protocolo MQTT
+#include <Wire.h>             // Para comunicação I2C (Display)
+#include <Adafruit_GFX.h>     // Gráficos do Display
+#include <Adafruit_SSD1306.h> // Driver do Display OLED SSD1306
+#include <DHT.h>              // Driver do sensor de temperatura/umidade
+#include <ArduinoJson.h>      // Essencial para interpretar as configurações enviadas pelo PC (JSON)
 
-// --- Configurações do Usuário ---
-const char* ssid = "Visitante";
-// const char* password = ""; // Deixe comentado se a rede for aberta
+// --- CONFIGURAÇÕES DE REDE (CREDENCIAIS) ---
+const char* ssid = "Visitante";      // Nome da sua rede Wi-Fi
+const char* password = "";           // Senha da rede (vazio se for aberta)
+const char* mqtt_server = "broker.hivemq.com"; // Endereço do Broker MQTT (Nuvem)
+const int mqtt_port = 1883;          // Porta padrão MQTT
 
-#define DHTPIN 2
-#define DHTTYPE DHT22
+// --- DEFINIÇÃO DOS TÓPICOS MQTT ---
+// É através destes endereços que o ESP32 e o PC conversam.
+const char* topic_pub_temp = "esp32/streamlit/temperatura"; // Tópico de envio (Temperatura)
+const char* topic_pub_hum  = "esp32/streamlit/umidade";     // Tópico de envio (Umidade)
+const char* topic_sub_conf = "esp32/streamlit/config";      // Tópico de escuta (Configurações)
 
-// --- Configurações do Display ---
+// --- MAPEAMENTO DE HARDWARE (PINOS) ---
+#define DHTPIN 2       // Pino de dados do sensor DHT22
+#define DHTTYPE DHT22  // Modelo do sensor
+#define LED_RED   25   // LED de Alerta de Temperatura
+#define LED_BLUE  26   // LED de Alerta de Umidade
+#define LED_GREEN 27   // LED de Status Normal
+#define BUTTON_PIN 38  // Botão central do T-Beam (para menu local)
+
+// --- CONFIGURAÇÃO DO DISPLAY OLED ---
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-#define OLED_RESET -1
-#define SCREEN_ADDRESS 0x3C
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-// --- Configurações MQTT ---
-const char* mqtt_server = "broker.hivemq.com";
-const int mqtt_port = 1883;
-// Tópicos para onde vamos enviar os dados
-const char* topico_temperatura = "esp32/streamlit/temperatura";
-const char* topico_umidade = "esp32/streamlit/umidade";
-
-// --- Inicializa os objetos ---
+// --- OBJETOS GLOBAIS ---
 DHT dht(DHTPIN, DHTTYPE);
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// --- Função showDisplay ---
-void showDisplay(const String &line1, const String &line2 = "", const String &line3 = "") {
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println(line1);
-  if (line2 != "") {
-    display.setCursor(0, 20);
-    display.println(line2);
-  }
-  if (line3 != "") {
-    display.setCursor(0, 40);
-    display.println(line3);
-  }
-  display.display();
-}
+// --- VARIÁVEIS DE CONTROLE DO SISTEMA ---
+// Armazenam os limites recebidos da nuvem. Iniciam com valores padrão de segurança.
+float conf_temp_max = 30.0;
+float conf_temp_min = 15.0;
+float conf_umid_max = 80.0;
+float conf_umid_min = 30.0;
 
-// --- Funções de Conexão ---
-void connectWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid); // Se tiver senha, use: WiFi.begin(ssid, password);
-  showDisplay("Conectando WiFi...");
-  Serial.print("Conectando ao WiFi: ");
-  Serial.println(ssid);
+// Variáveis para controlar o estado dos Alertas (Verdadeiro/Falso)
+bool alerta_temp_ativo = false;
+bool alerta_umid_ativo = false;
+
+// Controle do Menu no Display (0 = Monitoramento, 1 = Configuração)
+int menu_state = 0;
+unsigned long lastDebounceTime = 0; // Para evitar leituras falsas do botão
+
+// Controle de tempo para Piscar LEDs (Non-blocking)
+unsigned long previousMillisBlink = 0; 
+const long blinkInterval = 300; // Velocidade da piscada em ms (300ms = rápido/urgente)
+bool ledState = LOW; // Estado atual da piscada (Ligado/Desligado)
+
+// ======================================================================================
+// FUNÇÃO 1: CALLBACK MQTT
+// Esta função é executada AUTOMATICAMENTE sempre que chega uma mensagem no tópico de config.
+// ======================================================================================
+void callback(char* topic, byte* payload, unsigned int length) {
+  // 1. Converte a mensagem recebida (bytes) para uma String legível
+  String msg;
+  for (int i = 0; i < length; i++) msg += (char)payload[i];
   
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
-    delay(500);
-    Serial.print(".");
-  }
+  Serial.print("Nova configuração recebida: ");
+  Serial.println(msg);
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi conectado!");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-    showDisplay("WiFi conectado!", "IP:", WiFi.localIP().toString());
+  // 2. Interpreta o formato JSON (Ex: {"temp_max": 30, ...})
+  StaticJsonDocument<256> doc; 
+  DeserializationError error = deserializeJson(doc, msg);
+
+  if (!error) {
+    // 3. Se o JSON for válido, atualiza as variáveis globais do sistema
+    if (doc.containsKey("temp_max")) conf_temp_max = doc["temp_max"];
+    if (doc.containsKey("temp_min")) conf_temp_min = doc["temp_min"];
+    if (doc.containsKey("umid_max")) conf_umid_max = doc["umid_max"];
+    if (doc.containsKey("umid_min")) conf_umid_min = doc["umid_min"];
+    Serial.println("Limites atualizados com sucesso!");
   } else {
-    Serial.println("\nFalha ao conectar WiFi.");
-    showDisplay("WiFi falhou!", "Sem conexao...");
+    Serial.println("Erro ao ler JSON da configuração.");
   }
-  delay(1000);
 }
 
-void reconnectMQTT() {
-  while (!client.connected()) {
-    Serial.print("Tentando MQTT...");
-    showDisplay("Conectando MQTT...", "Broker:", mqtt_server);
+// ======================================================================================
+// FUNÇÃO 2: ATUALIZAR STATUS DOS ALERTAS
+// Verifica se os valores lidos estão dentro ou fora dos limites estabelecidos.
+// ======================================================================================
+void verificarAlertas(float t, float h) {
+  // Define se há alerta de temperatura (Acima do máx OU abaixo do mín)
+  alerta_temp_ativo = (t > conf_temp_max || t < conf_temp_min);
+  
+  // Define se há alerta de umidade
+  alerta_umid_ativo = (h > conf_umid_max || h < conf_umid_min);
+}
 
-    // Tenta se conectar
-    if (client.connect("ESP32-Streamlit-Client")) { // ID único do cliente
-      Serial.println("conectado!");
-      showDisplay("MQTT Conectado!");
+// ======================================================================================
+// FUNÇÃO 3: CONTROLE DE LEDS (COM PISCADA DE URGÊNCIA)
+// Executada a cada ciclo do loop para criar o efeito de piscar sem parar o código.
+// ======================================================================================
+void gerenciarLeds() {
+  unsigned long currentMillis = millis();
+
+  // Verifica se passou o tempo do intervalo (300ms)
+  if (currentMillis - previousMillisBlink >= blinkInterval) {
+    // Salva o último tempo que piscou
+    previousMillisBlink = currentMillis;
+
+    // Inverte o estado do LED (Se estava acesso, apaga. Se apagado, acende)
+    if (ledState == LOW) {
+      ledState = HIGH;
     } else {
-      Serial.print("falhou rc=");
-      Serial.print(client.state());
-      Serial.println(" - tentando de novo em 5s");
-      showDisplay("MQTT falhou!", "Tentando reconexao...");
-      delay(5000);
+      ledState = LOW;
+    }
+
+    // --- LÓGICA DO LED VERMELHO (TEMPERATURA) ---
+    if (alerta_temp_ativo) {
+      digitalWrite(LED_RED, ledState); // Pisca indicando perigo
+    } else {
+      digitalWrite(LED_RED, LOW);      // Mantém desligado se normal
+    }
+
+    // --- LÓGICA DO LED AZUL (UMIDADE) ---
+    if (alerta_umid_ativo) {
+      digitalWrite(LED_BLUE, ledState); // Pisca indicando perigo
+    } else {
+      digitalWrite(LED_BLUE, LOW);      // Mantém desligado se normal
+    }
+
+    // --- LÓGICA DO LED VERDE (NORMALIDADE) ---
+    // O verde fica ACESO DIRETO se não houver nenhum problema.
+    // Se houver qualquer alerta, o verde apaga para chamar atenção ao erro.
+    if (!alerta_temp_ativo && !alerta_umid_ativo) {
+      digitalWrite(LED_GREEN, HIGH);
+    } else {
+      digitalWrite(LED_GREEN, LOW);
     }
   }
 }
 
-void setup() {
-  Serial.begin(115200);
-  dht.begin();
-
-  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
-    Serial.println(F("Erro ao iniciar display SSD1306!"));
-    for(;;);
-  }
+// ======================================================================================
+// FUNÇÃO 4: ATUALIZAR DISPLAY OLED
+// Mostra as informações para o usuário localmente.
+// ======================================================================================
+void showDisplay(float t, float h) {
   display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  
+  if (menu_state == 0) {
+    // TELA PRINCIPAL: Dados em tempo real
+    display.setCursor(0, 0); display.println("EcoSense IoT - ESP32");
+    
+    // Mostra leituras atuais
+    display.setCursor(0, 15); display.printf("T:%.1f C  H:%.1f %%", t, h);
+    
+    // Mostra os limites configurados (para verificação visual)
+    display.setCursor(0, 35); 
+    display.printf("Lim T: %.0f-%.0f", conf_temp_min, conf_temp_max);
+    display.setCursor(0, 45); 
+    display.printf("Lim H: %.0f-%.0f", conf_umid_min, conf_umid_max);
+    
+    // Indicador visual de alerta no display
+    if(alerta_temp_ativo || alerta_umid_ativo) {
+        display.setCursor(90, 55); display.print("ALERTA!");
+    }
+  } else {
+    // TELA SECUNDÁRIA: Menu de informações
+    display.setCursor(0, 0); display.println("-- INFO SISTEMA --");
+    display.setCursor(0, 20); display.println("Config via Dashboard");
+    display.setCursor(0, 35); display.print("IP: "); display.println(WiFi.localIP());
+    display.setCursor(0, 50); display.print("Broker: "); display.println(client.connected() ? "OK" : "Erro");
+  }
   display.display();
-
-  connectWiFi();
-  client.setServer(mqtt_server, mqtt_port);
 }
 
-void loop() {
-  // Garante que o WiFi está conectado
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWiFi();
+// ======================================================================================
+// FUNÇÃO 5: RECONEXÃO MQTT
+// Garante que o ESP32 volte a se conectar se a internet cair.
+// ======================================================================================
+void reconnect() {
+  // Loop até conectar
+  while (!client.connected()) {
+    Serial.print("Tentando conexão MQTT...");
+    // Tenta conectar com um ID único
+    if (client.connect("ESP32_EcoSense_Client")) {
+      Serial.println("Conectado!");
+      // IMPORTANTE: Inscreve-se no tópico para VOLTAR a receber configurações
+      client.subscribe(topic_sub_conf); 
+    } else {
+      Serial.print("Falha rc=");
+      Serial.print(client.state());
+      Serial.println(" tentando novamente em 5s");
+      delay(5000); // Bloqueante apenas na falha de conexão (segurança)
+    }
+  }
+}
+
+// ======================================================================================
+// SETUP (CONFIGURAÇÃO INICIAL)
+// Executado apenas uma vez ao ligar o ESP32.
+// ======================================================================================
+void setup() {
+  Serial.begin(115200);
+
+  // 1. Configura Pinos dos LEDs e Botão
+  pinMode(LED_RED, OUTPUT); 
+  pinMode(LED_BLUE, OUTPUT); 
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP); // Resistor interno para evitar ruído
+
+  // 2. Inicia Sensor e Display
+  dht.begin();
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("Falha no Display OLED"));
+    for(;;); // Trava o código se não tiver display
   }
   
-  // Garante que o MQTT está conectado
-  if (!client.connected()) {
-    reconnectMQTT();
+  // 3. Conecta ao Wi-Fi
+  Serial.print("Conectando WiFi: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
   }
+  Serial.println("\nWiFi Conectado!");
 
-  // Permite que o cliente MQTT processe mensagens
+  // 4. Configura Servidor MQTT
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback); // Define a função que processa mensagens recebidas
+}
+
+// ======================================================================================
+// LOOP PRINCIPAL
+// Este código roda infinitamente e o mais rápido possível.
+// ======================================================================================
+void loop() {
+  // 1. Mantém a conexão MQTT viva
+  if (!client.connected()) reconnect();
   client.loop();
 
-  // Leitura do sensor (a cada 5 segundos)
-  float h = dht.readHumidity();
-  float t = dht.readTemperature();
+  // 2. Gerencia o Piscar dos LEDs (Roda muito rápido para efeito visual suave)
+  gerenciarLeds();
 
-  if (isnan(h) || isnan(t)) {
-    Serial.println("Falha ao ler DHT!");
-    showDisplay("Erro sensor DHT!", "Verifique conexao");
-  } else {
-    // Converte os floats para strings
-    char bufT[8], bufH[8];
-    dtostrf(t, 4, 1, bufT); // formato (float, min_width, precision, buffer)
-    dtostrf(h, 4, 1, bufH);
-
-    // Publica os dados nos tópicos
-    client.publish(topico_temperatura, bufT, true); // true = reter a mensagem
-    client.publish(topico_umidade, bufH, true);
-
-    Serial.printf("Publicado: Temp: %s C | Umid: %s %%\n", bufT, bufH);
-
-    // Mostra no display
-    String l1 = "MQTT: OK (Enviando)";
-    String l2 = "Temp: " + String(bufT) + " C";
-    String l3 = "Umid: " + String(bufH) + " %";
-    showDisplay(l1, l2, l3);
+  // 3. Leitura do Botão Físico (Alterna telas do display)
+  if (digitalRead(BUTTON_PIN) == LOW) {
+    if (millis() - lastDebounceTime > 300) { // Debounce de 300ms
+      menu_state = !menu_state;
+      lastDebounceTime = millis();
+    }
   }
 
-  delay(5000); // Envia dados a cada 5 segundos
+  // 4. Leitura do Sensor e Envio de Dados (Temporizado)
+  // Usamos millis() em vez de delay() para NÃO parar o piscar dos LEDs
+  static unsigned long lastMsg = 0;
+  if (millis() - lastMsg > 15000) { // Executa a cada 15 segundos (Economia Firebase)
+    lastMsg = millis();
+    
+    // Lê temperatura e umidade
+    float t = dht.readTemperature();
+    float h = dht.readHumidity();
+
+    // Verifica se a leitura é válida (não é NaN)
+    if (!isnan(t) && !isnan(h)) {
+      // a) Verifica se precisa ativar alertas
+      verificarAlertas(t, h);
+
+      // b) Atualiza o Display
+      showDisplay(t, h);
+      
+      // c) Envia para a nuvem via MQTT
+      char buf[8];
+      dtostrf(t, 1, 2, buf); client.publish(topic_pub_temp, buf);
+      dtostrf(h, 1, 2, buf); client.publish(topic_pub_hum, buf);
+      
+      Serial.printf("Dados Enviados -> T: %.2f | H: %.2f\n", t, h);
+    } else {
+      Serial.println("Erro na leitura do sensor DHT!");
+    }
+  }
 }
