@@ -61,26 +61,14 @@ Para manter o projeto dentro do plano gratuito (Spark), foram adotadas otimizaç
 
 ### **ESP32 TTGO T-Beam V1.1**
 
-  --------------------------------------------------------------------------
-  Componente         Pino    Função                         Comportamento
-  ------------------ ------- ------------------------------ ----------------
-  DHT22              GPIO 02 Temperatura/Umidade            Leitura
-                                                            periódica
-
-  LED Vermelho       GPIO 25 Alerta Temperatura             Pisca se fora do
-                                                            limite
-
-  LED Azul           GPIO 26 Alerta Umidade                 Pisca se fora do
-                                                            limite
-
-  LED Verde          GPIO 27 Status                         Aceso = OK /
-                                                            Apagado = Erro
-
-  Botão              GPIO 38 Input                          Alterna telas
-
-  Display OLED       I2C     Visualização                   Mostra dados e
-                     21/22                                  IP
-  -------------------------------------------------------- -----------------
+| Componente       | Pino      | Função                    | Comportamento               |
+| ---------------- | --------- | ------------------------- | --------------------------- |
+| DHT22            | GPIO 02   | Temperatura/Umidade       | Leitura periódica           |
+| LED Vermelho     | GPIO 25   | Alerta Temperatura        | Pisca se fora do limite     |
+| LED Azul         | GPIO 26   | Alerta Umidade            | Pisca se fora do limite     |
+| LED Verde        | GPIO 27   | Status                    | Aceso = OK / Apagado = Erro |
+| Botão            | GPIO 38   | Input                     | Alterna telas               |
+| Display OLED     | I2C 21/22 | Visualização              | Mostra dados e IP           |
 
 ------------------------------------------------------------------------
 
@@ -200,11 +188,11 @@ Ou usando:
 ------------------------------------------------------------------------
 ## 👥 Autores
 
-| Nome              | Links | E-Mail |
-| ----------------- | ---------------------- | ---------------------- |
-| Henrique Luan F.  | [LinkedIn](https://www.linkedin.com/in/henrique-luan-fritz-70412635a/)        | [Henrique.fritz@sou.unijui.edu.br](mailto:Henrique.fritz@sou.unijui.edu.br) |
-| Luan Vitor C. D. | [LinkedIn](https://www.linkedin.com/in/luan-vitor-casali-dallabrida-20a60a342/)        | [luanvitorcd@gmail.com](mailto:luanvitorcd@gmail.com) |
-| Lucas P. Sckenal   | [LinkedIn](https://www.linkedin.com/in/lucassckenal/)        | [lucaspsckenal@gmail.com](mailto:lucaspsckenal@gmail.com) |
+| Nome             | Links 									                                                         | E-Mail                                                                      |
+| ---------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Henrique Luan F. | [LinkedIn](https://www.linkedin.com/in/henrique-luan-fritz-70412635a/)          | [Henrique.fritz@sou.unijui.edu.br](mailto:Henrique.fritz@sou.unijui.edu.br) |
+| Luan Vitor C. D. | [LinkedIn](https://www.linkedin.com/in/luan-vitor-casali-dallabrida-20a60a342/) | [luanvitorcd@gmail.com](mailto:luanvitorcd@gmail.com) 			                 |
+| Lucas P. Sckenal | [LinkedIn](https://www.linkedin.com/in/lucassckenal/)        		               | [lucaspsckenal@gmail.com](mailto:lucaspsckenal@gmail.com) 		               |
 
 ------------------------------------------------------------------------
 
