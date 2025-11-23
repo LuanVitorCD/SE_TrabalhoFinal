@@ -7,12 +7,15 @@
 
 Um sistema completo de monitoramento ambiental voltado para eficiência, baixo custo e controle remoto. A solução integra **ESP32 + MQTT + Firebase + Streamlit**, oferecendo coleta contínua de dados climáticos, visualização em tempo real e configuração remota de limites.
 
+<p align="center">
+  <img src="assets/dashboard_print.png" width="700" title="Interface do Dashboard">
+</p>
+
 ------------------------------------------------------------------------
 
 ## 🌐 Visão Geral do Projeto
 
-O **EcoSense IoT** monitora temperatura e umidade usando um sensor DHT22 conectado ao ESP32.
-Os dados são enviados via **MQTT** para um script **Python Bridge**, que os salva no **Firestore**, permitindo consultá-los no **Dashboard Web**.
+O **EcoSense IoT** monitora temperatura e umidade usando um sensor DHT22 conectado ao ESP32. Os dados são enviados via **MQTT** para um script **Python Bridge**, que os salva no **Firestore**, permitindo consultá-los no **Dashboard Web**.
 
 O sistema também permite **controle remoto**: o usuário define limites no Dashboard e o ESP32 recebe automaticamente as novas configurações via MQTT.
 
@@ -25,7 +28,7 @@ O fluxo do projeto combina comunicação bidirecional utilizando **MQTT + Fireba
 ### **1. Monitoramento (Upload)**
 
 -   ESP32 lê o DHT22 a cada 15 segundos;
--   Publica temperatura e umidade via MQT;
+-   Publica temperatura e umidade via MQTT;
 -   O *Bridge* Python intercepta e grava os dados no Firestore;
 -   O Dashboard exibe dados utilizando cache para economia.
 
@@ -51,6 +54,10 @@ Para manter o projeto dentro do plano gratuito (Spark), foram adotadas otimizaç
 ------------------------------------------------------------------------
 
 ## 🔌 Hardware Utilizado
+
+<p align="center">
+  <img src="assets/esp32_montado.png" width="700" title="Circuito do ESP32 montado">
+</p>
 
 ### **ESP32 TTGO T-Beam V1.1**
 
@@ -79,7 +86,7 @@ Para manter o projeto dentro do plano gratuito (Spark), foram adotadas otimizaç
 
 ## 💻 Componentes de Software
 
-### **1. Firmware -- `esp32_firmware_v2.ino`**
+### **1. Firmware -- `ESP32_Sensor_WiFi.ino`**
 
 -   C++ para microcontrolador;
 -   Bibliotecas: WiFi, PubSubClient (MQTT), ArduinoJson, Adafruit, SSD1306, DHT.
@@ -99,7 +106,7 @@ Para manter o projeto dentro do plano gratuito (Spark), foram adotadas otimizaç
 
 ------------------------------------------------------------------------
 
-### **3. Dashboard Web -- `dashboard_economico.py`**
+### **3. Dashboard Web -- `main.py`**
 
 -   Construído em Streamlit.
 -   Funcionalidades:
@@ -158,7 +165,7 @@ Ou usando:
 
 ### **5. Subir Firmware no ESP32**
 
-1.  Abrir o `esp32_firmware_v2.ino` na Arduino IDE;
+1.  Abrir o `ESP32_Sensor_WiFi.ino` na Arduino IDE;
 2.  Instalar dependências;
 3.  Inserir `ssid` e `password`;
 4.  Fazer upload.
@@ -187,8 +194,17 @@ Ou usando:
     ├── requirements.txt
     ├── firebase_key.json      // Não versionar
     ├── .env                   // Não versionar
-    ├── .gitgnore
+    ├── .gitignore
     └── README.md
+
+------------------------------------------------------------------------
+## 👥 Autores
+
+| Nome              | Links | E-Mail |
+| ----------------- | ---------------------- | ---------------------- |
+| Henrique Luan F.  | [LinkedIn](https://www.linkedin.com/in/henrique-luan-fritz-70412635a/)        | [Henrique.fritz@sou.unijui.edu.br](mailto:Henrique.fritz@sou.unijui.edu.br) |
+| Luan Vitor C. D. | [LinkedIn](https://www.linkedin.com/in/luan-vitor-casali-dallabrida-20a60a342/)        | [luanvitorcd@gmail.com](mailto:luanvitorcd@gmail.com) |
+| Lucas P. Sckenal   | [LinkedIn](https://www.linkedin.com/in/lucassckenal/)        | [lucaspsckenal@gmail.com](mailto:lucaspsckenal@gmail.com) |
 
 ------------------------------------------------------------------------
 
