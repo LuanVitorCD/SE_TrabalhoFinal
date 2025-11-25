@@ -64,9 +64,9 @@ Para manter o projeto dentro do plano gratuito (Spark), foram adotadas otimizaç
 | Componente       | Pino      | Função                    | Comportamento               |
 | ---------------- | --------- | ------------------------- | --------------------------- |
 | DHT22            | GPIO 02   | Temperatura/Umidade       | Leitura periódica           |
-| LED Vermelho     | GPIO 25   | Alerta Temperatura        | Pisca se fora do limite     |
-| LED Azul         | GPIO 26   | Alerta Umidade            | Pisca se fora do limite     |
-| LED Verde        | GPIO 27   | Status                    | Aceso = OK / Apagado = Erro |
+| LED Vermelho     | GPIO 13   | Alerta Temperatura        | Pisca se fora do limite     |
+| LED Azul         | GPIO 25   | Alerta Umidade            | Pisca se fora do limite     |
+| LED Verde        | GPIO 32   | Status                    | Aceso = OK / Apagado = Erro |
 | Botão            | GPIO 38   | Input                     | Alterna telas               |
 | Display OLED     | I2C 21/22 | Visualização              | Mostra dados e IP           |
 
