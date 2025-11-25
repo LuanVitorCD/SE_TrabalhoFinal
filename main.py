@@ -35,6 +35,8 @@ if 'historico_umid' not in st.session_state: st.session_state.historico_umid = p
 if 'kpi_temp' not in st.session_state: st.session_state.kpi_temp = {}
 if 'kpi_umid' not in st.session_state: st.session_state.kpi_umid = {}
 if 'last_history_update' not in st.session_state: st.session_state.last_history_update = None
+if 'config_cache' not in st.session_state: 
+    st.session_state.config_cache = {"temp_max": 30, "temp_min": 15, "umid_max": 80, "umid_min": 30}
 
 # ==========================================
 # 2. CONEXÃO FIREBASE
@@ -75,35 +77,45 @@ with st.sidebar:
     st.markdown("### 📡 Ajuste de Alertas (Remoto)")
     st.caption("Define quando os LEDs do ESP32 acendem.")
     
-    # Botão para carregar config atual (Economia: só lê se usuário pedir)
+    # Botão para carregar config atual
     if st.button("🔄 Carregar Configuração Atual"):
-        cfg = db.collection(COLLECTION_CONFIG).document(DOC_CONFIG_ID).get()
-        if cfg.exists:
-            st.session_state.config_cache = cfg.to_dict()
-        else:
-            st.warning("Configuração não encontrada no banco.")
+        try:
+            cfg = db.collection(COLLECTION_CONFIG).document(DOC_CONFIG_ID).get()
+            if cfg.exists:
+                st.session_state.config_cache = cfg.to_dict()
+                st.success("✅ Configuração carregada do ARDUINO!")
+            else:
+                st.warning("Configuração não encontrada no banco.")
+        except Exception as e:
+            st.error(f"Erro ao ler: {e}")
     
-    # Carrega do cache ou usa padrão
-    curr_cfg = st.session_state.get('config_cache', {"temp_max": 30, "temp_min": 15, "umid_max": 80, "umid_min": 30})
+    # Carrega do cache
+    curr_cfg = st.session_state.config_cache
     
     with st.form("conf_form_sidebar"):
         st.markdown("**Temperatura (°C)**")
         c1, c2 = st.columns(2)
-        nt_max = c1.number_input("Máx", value=float(curr_cfg.get('temp_max', 30)), label_visibility="collapsed")
-        nt_min = c2.number_input("Mín", value=float(curr_cfg.get('temp_min', 15)), label_visibility="collapsed")
+        nt_max = c1.number_input("Máx", value=float(curr_cfg.get('temp_max', 30)), key="in_t_max", label_visibility="collapsed")
+        nt_min = c2.number_input("Mín", value=float(curr_cfg.get('temp_min', 15)), key="in_t_min", label_visibility="collapsed")
         
         st.markdown("**Umidade (%)**")
         c3, c4 = st.columns(2)
-        nu_max = c3.number_input("Máx", value=float(curr_cfg.get('umid_max', 80)), label_visibility="collapsed")
-        nu_min = c4.number_input("Mín", value=float(curr_cfg.get('umid_min', 30)), label_visibility="collapsed")
+        nu_max = c3.number_input("Máx", value=float(curr_cfg.get('umid_max', 80)), key="in_u_max", label_visibility="collapsed")
+        nu_min = c4.number_input("Mín", value=float(curr_cfg.get('umid_min', 30)), key="in_u_min", label_visibility="collapsed")
             
         if st.form_submit_button("💾 Enviar para ESP32"):
-            new_conf = {
-                "temp_max": nt_max, "temp_min": nt_min,
-                "umid_max": nu_max, "umid_min": nu_min
-            }
-            db.collection(COLLECTION_CONFIG).document(DOC_CONFIG_ID).set(new_conf)
-            st.success("Comando enviado!")
+            # LÓGICA CORRIGIDA: Compara os valores digitados (nt/nu)
+            if (nt_min >= nt_max) or (nu_min >= nu_max): 
+                st.error("🚨 Erro de Lógica: O valor Mínimo não pode ser maior ou igual ao Máximo!")
+            else:
+                new_conf = {
+                    "temp_max": nt_max, "temp_min": nt_min,
+                    "umid_max": nu_max, "umid_min": nu_min
+                }
+                db.collection(COLLECTION_CONFIG).document(DOC_CONFIG_ID).set(new_conf)
+                # Atualiza o cache local também para refletir a mudança imediata
+                st.session_state.config_cache = new_conf
+                st.success("✅ Comando enviado!")
 
     st.markdown("---")
     st.info(f"Última carga gráfica: {st.session_state.last_history_update if st.session_state.last_history_update else 'Nunca'}")
@@ -186,6 +198,42 @@ if ativo:
 # ==========================================
 
 st.title("🌤️ EcoSense IoT")
+
+# --- BLOCO VISUAL DE ALERTAS ---
+# Recupera valores atuais e limites
+v_temp = st.session_state.kpi_temp.get('valor')
+v_umid = st.session_state.kpi_umid.get('valor')
+
+# Se não tiver dados ainda, usa limites padrão para não quebrar a lógica
+l_t_max = curr_cfg.get('temp_max', 30)
+l_t_min = curr_cfg.get('temp_min', 15)
+l_u_max = curr_cfg.get('umid_max', 80)
+l_u_min = curr_cfg.get('umid_min', 30)
+
+alert_t = False
+alert_u = False
+
+# Verifica Temp
+if v_temp is not None:
+    if v_temp > l_t_max or v_temp < l_t_min:
+        alert_t = True
+
+# Verifica Umid
+if v_umid is not None:
+    if v_umid > l_u_max or v_umid < l_u_min:
+        alert_u = True
+
+# Exibe o Alerta Visual
+if alert_t and alert_u:
+    st.error(f"🚨 ALERTA CRÍTICO: Temperatura ({v_temp}°C) e Umidade ({v_umid}%) fora dos limites!")
+elif alert_t:
+    st.warning(f"⚠️ Atenção: Temperatura de {v_temp}°C está fora do limite ({l_t_min}°C - {l_t_max}°C)!")
+elif alert_u:
+    st.warning(f"⚠️ Atenção: Umidade de {v_umid}% está fora do limite ({l_u_min}% - {l_u_max}%)!")
+else:
+    st.success("✅ Sistema Estável: Todos os parâmetros dentro dos limites.")
+
+st.markdown("---")
 
 # --- BLOCO 1: INDICADORES (KPIs) ---
 col1, col2, col3 = st.columns(3)

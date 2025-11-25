@@ -23,112 +23,139 @@ from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
 from datetime import datetime
 
-# Carregar variáveis de ambiente
-load_dotenv()
+# ==============================================================================
+# CONFIGURAÇÕES 
+# ==============================================================================
+BROKER = "broker.hivemq.com"
+PORT = 1883
 
-# Configuração de Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Tópicos (Exatamente iguais ao ESP32_Sensor_WiFi.ino)
+TOPIC_TEMP = "esp32/sensor/temperatura"
+TOPIC_HUM = "esp32/sensor/umidade"
+TOPIC_CONFIG_SEND = "esp32/config/limites" # Onde enviamos a config
+
+# Configuração Firebase
+load_dotenv()
+cred_path = os.getenv("FIREBASE_CREDENTIALS", "firebase_key.json") # Tenta ler do .env ou usa padrão
+
+# Configuração de Logging (Estilo "Matrix")
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger("Bridge")
 
-# --- CONFIGURAÇÃO FIREBASE ---
-cred_path = os.getenv("FIREBASE_CREDENTIALS")
-if not os.path.exists(cred_path):
-    logger.error(f"Arquivo de credenciais não encontrado: {cred_path}")
-    exit(1)
+# ==============================================================================
+# 1. INICIALIZAÇÃO DO FIREBASE
+# ==============================================================================
+db = None
+try:
+    if not firebase_admin._apps:
+        if os.path.exists(cred_path):
+            cred = credentials.Certificate(cred_path)
+            firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            print(f"🔥 Firebase CONECTADO! (Lendo de: {cred_path})")
+        else:
+            print(f"❌ ERRO: Arquivo '{cred_path}' não encontrado!")
+            print("   O script vai rodar, mas NÃO vai salvar dados no banco.")
+    else:
+        db = firestore.client()
+except Exception as e:
+    print(f"❌ Erro crítico no Firebase: {e}")
 
-cred = credentials.Certificate(cred_path)
-firebase_admin.initialize_app(cred)
-db = firestore.client()
+# Nomes das coleções no Firebase
+COL_DATA = "estacao_dados"
+COL_CONFIG = "estacao_config"
+DOC_CONFIG = "limites_alerta"
 
-COLLECTION_DATA = os.getenv("COLLECTION_DATA", "estacao_dados")
-COLLECTION_CONFIG = os.getenv("COLLECTION_CONFIG", "estacao_config")
-DOC_CONFIG = os.getenv("DOC_CONFIG_ID", "limites_alerta")
-
-# --- CONFIGURAÇÃO MQTT ---
-BROKER = os.getenv("MQTT_BROKER")
-PORT = int(os.getenv("MQTT_PORT", 1883))
-TOPIC_TEMP = os.getenv("MQTT_TOPIC_TEMP")
-TOPIC_HUM = os.getenv("MQTT_TOPIC_HUM")
-TOPIC_CONFIG = os.getenv("MQTT_TOPIC_CONFIG")
-
-mqtt_client = mqtt.Client("Bridge_Worker_Python")
-
-# ---------------------------------------------------------
-# LÓGICA 1: RECEBER DADOS DO SENSOR -> SALVAR NO FIREBASE
-# ---------------------------------------------------------
+# ==============================================================================
+# 2. FUNÇÕES MQTT (Ouvir Sensor -> Salvar no Banco)
+# ==============================================================================
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        logger.info("✅ Conectado ao MQTT Broker!")
+        print(f"✅ CONECTADO AO BROKER MQTT! ({BROKER})")
         client.subscribe([(TOPIC_TEMP, 0), (TOPIC_HUM, 0)])
+        print(f"👂 Ouvindo sensores em: {TOPIC_TEMP} e {TOPIC_HUM}")
     else:
-        logger.error(f"Falha na conexão MQTT. Código: {rc}")
+        print(f"❌ Falha na conexão MQTT. Código: {rc}")
 
 def on_message(client, userdata, msg):
     try:
-        payload = float(msg.payload.decode())
-        topic = msg.topic
-        tipo = "temperatura" if topic == TOPIC_TEMP else "umidade"
+        payload_str = msg.payload.decode()
+        valor = float(payload_str)
+        tipo = "temperatura" if msg.topic == TOPIC_TEMP else "umidade"
         
-        logger.info(f"📥 Recebido {tipo}: {payload}")
+        # Print bonitinho para ver passando
+        emoji = "🌡️" if tipo == "temperatura" else "💧"
+        print(f"📥 {emoji} RECEBIDO: {valor} ({tipo})")
 
-        # Salvar no Firestore
-        doc_data = {
-            "tipo": tipo,
-            "valor": payload,
-            "timestamp": datetime.now() # Firestore converte isso nativamente
-        }
-        # Adiciona um novo documento na coleção
-        db.collection(COLLECTION_DATA).add(doc_data)
-        logger.info(f"💾 Salvo no Firebase ({tipo})")
-
+        # Salva no Firebase
+        if db:
+            db.collection(COL_DATA).add({
+                "tipo": tipo,
+                "valor": valor,
+                "timestamp": datetime.now()
+            })
+            # print("   💾 Salvo no Firebase") 
+            # Comentei o print acima para não poluir, descomente se quiser ver
+            
     except Exception as e:
-        logger.error(f"Erro ao processar mensagem: {e}")
+        print(f"⚠️ Erro ao processar msg: {e}")
 
-# ---------------------------------------------------------
-# LÓGICA 2: OUVIR FIREBASE -> ENVIAR CONFIG PARA O SENSOR
-# ---------------------------------------------------------
-# Esta função roda automaticamente quando algo muda no Firestore
-def on_config_snapshot(doc_snapshot, changes, read_time):
-    for doc in doc_snapshot:
+# ==============================================================================
+# 3. FUNÇÃO FIREBASE LISTENER (Banco Mudou -> Enviar para ESP32)
+# ==============================================================================
+def on_config_change(doc_snapshot, changes, read_time):
+    """
+    Esta função é disparada AUTOMATICAMENTE pelo Google
+    sempre que você clica em 'Enviar' no Streamlit.
+    """
+    for change in changes:
+        doc = change.document
         data = doc.to_dict()
         if data:
-            logger.info(f"⚙️ Configuração alterada no Firebase: {data}")
+            print("\n🔔 --- ALTERAÇÃO DETECTADA NO FIREBASE ---")
+            print(f"   Dados lidos do banco: {data}")
             
-            # Prepara payload JSON para o ESP32
-            # O ESP32 espera chaves: "temp_max" e "temp_min"
+            # Monta o JSON para o ESP32 (Garante que os campos batam)
             payload_esp32 = json.dumps({
-                "temp_max": data.get("temp_max", 30.0),
-                "temp_min": data.get("temp_min", 15.0),
-                "umid_max": data.get("umid_max", 80.0),
-                "umid_min": data.get("umid_min", 30.0)
+                "temp_max": float(data.get("temp_max", 30)),
+                "temp_min": float(data.get("temp_min", 15)),
+                "umid_max": float(data.get("umid_max", 80)),
+                "umid_min": float(data.get("umid_min", 30))
             })
             
-            # Publica no MQTT
-            mqtt_client.publish(TOPIC_CONFIG, payload_esp32, retain=True)
-            logger.info(f"📡 Enviado para ESP32 via MQTT: {payload_esp32}")
+            # Envia para o ESP32
+            mqtt_client.publish(TOPIC_CONFIG_SEND, payload_esp32, retain=False)
+            print(f"🚀 ENVIADO PARA ESP32 ({TOPIC_CONFIG_SEND})")
+            print(f"📦 Payload: {payload_esp32}")
+            print("-------------------------------------------\n")
 
-# Iniciar listener do Firestore (em background)
-config_ref = db.collection(COLLECTION_CONFIG).document(DOC_CONFIG)
-config_watch = config_ref.on_snapshot(on_config_snapshot)
-
-# ---------------------------------------------------------
-# LOOP PRINCIPAL
-# ---------------------------------------------------------
+# ==============================================================================
+# MAIN
+# ==============================================================================
 if __name__ == "__main__":
+    # Configura MQTT
+    mqtt_client = mqtt.Client(client_id="Python_Bridge_Final")
     mqtt_client.on_connect = on_connect
     mqtt_client.on_message = on_message
 
-    try:
-        logger.info(f"🔗 Conectando ao Broker {BROKER}...")
-        mqtt_client.connect(BROKER, PORT, 60)
+    # Conecta o Listener do Firebase (Ouvido Biônico)
+    if db:
+        print("👀 Iniciando vigilância no documento de configuração...")
+        config_ref = db.collection(COL_CONFIG).document(DOC_CONFIG)
         
-        # Cria o documento de config padrão se não existir
+        # Se o doc não existir, cria um padrão para não dar erro
         if not config_ref.get().exists:
-            logger.info("Criando configuração padrão no Firebase...")
-            config_ref.set({"temp_max": 30.0, "temp_min": 15.0})
+            print("⚠️ Config não existia, criando padrão...")
+            config_ref.set({"temp_max": 30, "temp_min": 15, "umid_max": 80, "umid_min": 30})
+            
+        # Liga o listener
+        config_watch = config_ref.on_snapshot(on_config_change)
 
+    # Conecta MQTT e roda para sempre
+    try:
+        print("⏳ Conectando MQTT...")
+        mqtt_client.connect(BROKER, PORT, 60)
         mqtt_client.loop_forever()
-        
     except KeyboardInterrupt:
-        logger.info("Parando Bridge...")
+        print("\n🛑 Bridge encerrado.")
         mqtt_client.disconnect()
