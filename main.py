@@ -21,13 +21,13 @@ from firebase_admin import credentials, firestore
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
+import json
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
 # 1. CONFIGURAÇÃO E ESTADO INICIAL
 # ==========================================
 st.set_page_config(page_title="EcoSense IoT", layout="wide", page_icon="🌤️")
-load_dotenv()
 
 # Inicializa Session State
 if 'historico_temp' not in st.session_state: st.session_state.historico_temp = pd.DataFrame()
@@ -39,21 +39,41 @@ if 'config_cache' not in st.session_state:
     st.session_state.config_cache = {"temp_max": 30, "temp_min": 15, "umid_max": 80, "umid_min": 30}
 
 # ==========================================
-# 2. CONEXÃO FIREBASE
+# 2. CONEXÃO FIREBASE (HÍBRIDA: LOCAL OU NUVEM)
 # ==========================================
+def get_firebase_credentials():
+    # 1. Tenta carregar dos Secrets do Streamlit (Para a Nuvem)
+    if "firebase" in st.secrets:
+        # Cria um dicionário com os dados do secret
+        creds_dict = dict(st.secrets["firebase"])
+        # Corrige a formatação da chave privada (substitui \\n por \n real)
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        return credentials.Certificate(creds_dict)
+    
+    # 2. Tenta carregar do arquivo local (Para o seu PC)
+    else:
+        load_dotenv()
+        cred_path = os.getenv("FIREBASE_CREDENTIALS", "firebase_key.json")
+        if os.path.exists(cred_path):
+            return credentials.Certificate(cred_path)
+        else:
+            return None
+
+# Inicializa o Firebase
 if not firebase_admin._apps:
-    cred_path = os.getenv("FIREBASE_CREDENTIALS", "firebase_key.json")
-    if os.path.exists(cred_path):
-        cred = credentials.Certificate(cred_path)
+    cred = get_firebase_credentials()
+    if cred:
         firebase_admin.initialize_app(cred)
     else:
-        st.error("🚨 Credenciais não encontradas.")
+        st.error("🚨 Erro Crítico: Credenciais do Firebase não encontradas (Nem Secrets, nem arquivo local).")
         st.stop()
 
 db = firestore.client()
-COLLECTION_DATA = os.getenv("COLLECTION_DATA", "estacao_dados")
-COLLECTION_CONFIG = os.getenv("COLLECTION_CONFIG", "estacao_config")
-DOC_CONFIG_ID = "limites_alerta"
+
+# Carrega nomes das coleções (Tenta do Secret, senão pega do .env/padrão)
+COLLECTION_DATA = st.secrets.get("COLLECTION_DATA", os.getenv("COLLECTION_DATA", "estacao_dados"))
+COLLECTION_CONFIG = st.secrets.get("COLLECTION_CONFIG", os.getenv("COLLECTION_CONFIG", "estacao_config"))
+DOC_CONFIG_ID = st.secrets.get("DOC_CONFIG_ID", "limites_alerta")
 
 # ==========================================
 # 3. SIDEBAR (CONTROLE & CONFIGURAÇÃO)
