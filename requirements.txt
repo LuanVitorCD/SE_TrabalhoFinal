@@ -2,7 +2,6 @@ streamlit
 streamlit-autorefresh
 pandas
 plotly
-pyserial
 paho-mqtt
 firebase-admin
 python-dotenv
