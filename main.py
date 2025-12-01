@@ -44,10 +44,20 @@ if 'config_cache' not in st.session_state:
 def get_firebase_credentials():
     # 1. Tenta carregar dos Secrets do Streamlit (Para a Nuvem)
     if "firebase" in st.secrets:
-        # Cria um dicionário com os dados do secret
         creds_dict = dict(st.secrets["firebase"])
-        # Corrige a formatação da chave privada (substitui \\n por \n real)
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        
+        # A chave pode vir com quebras de linha reais OU literais "\n"
+        private_key = creds_dict.get("private_key", "")
+        
+        # Se tiver "\\n" literal (comum ao copiar do JSON), substitui por enter real
+        if "\\n" in private_key:
+            private_key = private_key.replace("\\n", "\n")
+        
+        # Se tiver "\\\\n" (dupla barra, erro de escape), corrige também
+        if "\\\\n" in private_key:
+            private_key = private_key.replace("\\\\n", "\n")
+            
+        creds_dict["private_key"] = private_key
         return credentials.Certificate(creds_dict)
     
     # 2. Tenta carregar do arquivo local (Para o seu PC)
@@ -65,7 +75,7 @@ if not firebase_admin._apps:
     if cred:
         firebase_admin.initialize_app(cred)
     else:
-        st.error("🚨 Erro Crítico: Credenciais do Firebase não encontradas (Nem Secrets, nem arquivo local).")
+        st.error("🚨 Erro Crítico: Credenciais do Firebase não encontradas.")
         st.stop()
 
 db = firestore.client()
