@@ -46,17 +46,16 @@ def get_firebase_credentials():
     if "firebase" in st.secrets:
         creds_dict = dict(st.secrets["firebase"])
         
-        # A chave pode vir com quebras de linha reais OU literais "\n"
+        # Garante que o tipo é service_account (evita um dos erros do Traceback)
+        if "type" not in creds_dict:
+            creds_dict["type"] = "service_account"
+
+        # --- CORREÇÃO DA CHAVE PRIVADA ---
         private_key = creds_dict.get("private_key", "")
         
-        # Se tiver "\\n" literal (comum ao copiar do JSON), substitui por enter real
-        if "\\n" in private_key:
-            private_key = private_key.replace("\\n", "\n")
+        # Força a substituição de qualquer variação de quebra de linha por \n real
+        private_key = private_key.replace("\\n", "\n").replace("\\\\n", "\n")
         
-        # Se tiver "\\\\n" (dupla barra, erro de escape), corrige também
-        if "\\\\n" in private_key:
-            private_key = private_key.replace("\\\\n", "\n")
-            
         creds_dict["private_key"] = private_key
         return credentials.Certificate(creds_dict)
     
